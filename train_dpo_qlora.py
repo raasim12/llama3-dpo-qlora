@@ -9,6 +9,8 @@ from datasets import load_dataset
 from peft import LoraConfig, prepare_model_for_kbit_training, get_peft_model
 from trl import DPOTrainer, DPOConfig
 import wandb
+import os
+from huggingface_hub import login
 
 # Configuration
 MODEL_NAME = "meta-llama/Meta-Llama-3-8B"  # Base model
@@ -51,11 +53,9 @@ training_args = DPOConfig(
     eval_strategy="steps",
     save_total_limit=2,
     remove_unused_columns=False,
-
     local_rank=-1,  # torchrun will handle this
     ddp_find_unused_parameters=False,
     report_to="wandb",
-
     beta=0.1,  # DPO beta parameter
     max_prompt_length=512,
     max_length=1024,
@@ -63,7 +63,7 @@ training_args = DPOConfig(
 
 def load_and_prepare_dataset(dataset_name):
     """Load and format the preference dataset"""
-    print(f"Loading dataset: {dataset_name}")
+    print(f"Loading dataset: {dataset_name}", flush=True)
     
     if "hh-rlhf" in dataset_name.lower():
         # Load HH-RLHF dataset
@@ -97,19 +97,55 @@ def load_and_prepare_dataset(dataset_name):
     return dataset
 
 def main():
-    # Initialize wandb
-    #wandb.init(project="llama3-dpo-qlora", name="llama3-8b-dpo-run")
+    # ============================================================
+    # LOGIN TO HUGGINGFACE
+    # ============================================================
+    token_path = os.path.expanduser("~/.cache/huggingface/token")
+    if os.path.exists(token_path):
+        with open(token_path, 'r') as f:
+            token = f.read().strip()
+        login(token=token)
+        print("✅ Logged in to HuggingFace", flush=True)
+    else:
+        print("❌ WARNING: No HuggingFace token found!", flush=True)
+        print(f"   Expected location: {token_path}", flush=True)
+
+    # ============================================================
+    # INITIALIZE WANDB (Only on main process)
+    # ============================================================
+    rank = int(os.environ.get("RANK", -1))
+
+    if rank in [-1, 0]:  # Main process or single GPU
+        wandb.init(
+            project=os.environ.get("WANDB_PROJECT", "llama_dpo_qlora"),
+            name=os.environ.get("WANDB_NAME", f"llama3-dpo-run"),
+            config={
+                "model": MODEL_NAME,
+                "dataset": DATASET_NAME,
+                "learning_rate": 5e-5,
+                "num_epochs": 1,
+                "beta": 0.1,
+                "lora_r": 16,
+                "lora_alpha": 32,
+                "per_device_train_batch_size": 2,
+                "gradient_accumulation_steps": 4,
+            }
+        )
+        print("✅ WandB initialized on main process", flush=True)
+    else:
+        print(f"Rank {rank}: Skipping WandB init (not main process)", flush=True)
+
+    # ============================================================
     
-    print("Loading tokenizer...")
+    print("Loading tokenizer...", flush=True)
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"  # Important for DPO
     
-    print("Loading model with QLoRA...")
+    print("Loading model with QLoRA...", flush=True)
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
         quantization_config=bnb_config,
-        #device_map="auto", #This tells accelerate to place model layers across devices, might make data parallelism harder
         torch_dtype=torch.bfloat16,
         trust_remote_code=True,
     )
@@ -122,11 +158,10 @@ def main():
     model.print_trainable_parameters()
     
     # Load reference model (frozen, for DPO)
-    print("Loading reference model...")
+    print("Loading reference model...", flush=True)
     ref_model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
         quantization_config=bnb_config,
-        #device_map="auto",
         torch_dtype=torch.bfloat16,
         trust_remote_code=True,
     )
@@ -136,38 +171,43 @@ def main():
     train_dataset = dataset["train"]
     eval_dataset = dataset["test"] if "test" in dataset else dataset["train"].select(range(100))
     
-    print(f"Train dataset size: {len(train_dataset)}")
-    print(f"Eval dataset size: {len(eval_dataset)}")
+    print(f"Train dataset size: {len(train_dataset)}", flush=True)
+    print(f"Eval dataset size: {len(eval_dataset)}", flush=True)
     
     # Print example
-    print("\nExample training sample:")
-    print(f"Prompt: {train_dataset[0]['prompt'][:100]}...")
-    print(f"Chosen: {train_dataset[0]['chosen'][:100]}...")
-    print(f"Rejected: {train_dataset[0]['rejected'][:100]}...")
+    print("\nExample training sample:", flush=True)
+    print(f"Prompt: {train_dataset[0]['prompt'][:100]}...", flush=True)
+    print(f"Chosen: {train_dataset[0]['chosen'][:100]}...", flush=True)
+    print(f"Rejected: {train_dataset[0]['rejected'][:100]}...", flush=True)
     
     # Initialize DPO Trainer
-    print("\nInitializing DPO Trainer...")
+    print("\nInitializing DPO Trainer...", flush=True)
     trainer = DPOTrainer(
         model=model,
         ref_model=ref_model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        tokenizer=tokenizer,
-        peft_config=peft_config,
+        processing_class=tokenizer,
     )
     
     # Train
-    print("\nStarting training...")
+    print("\n" + "="*50, flush=True)
+    print("Starting training...", flush=True)
+    print("="*50 + "\n", flush=True)
     trainer.train()
     
     # Save final model
-    print("\nSaving model...")
+    print("\nSaving model...", flush=True)
     trainer.save_model(OUTPUT_DIR)
     tokenizer.save_pretrained(OUTPUT_DIR)
     
-    print(f"\nTraining complete! Model saved to {OUTPUT_DIR}")
-    #wandb.finish()
+    print(f"\nTraining complete! Model saved to {OUTPUT_DIR}", flush=True)
+    
+    # Finish WandB (only on main process)
+    if rank in [-1, 0]:
+        wandb.finish()
+        print("✅ WandB finished", flush=True)
 
 if __name__ == "__main__":
     main()

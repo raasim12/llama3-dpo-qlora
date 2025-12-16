@@ -51,7 +51,11 @@ training_args = DPOConfig(
     evaluation_strategy="steps",
     save_total_limit=2,
     remove_unused_columns=False,
+
+    local_rank=-1,  # torchrun will handle this
+    ddp_find_unused_parameters=False,
     report_to="wandb",
+
     beta=0.1,  # DPO beta parameter
     max_prompt_length=512,
     max_length=1024,
@@ -94,7 +98,7 @@ def load_and_prepare_dataset(dataset_name):
 
 def main():
     # Initialize wandb
-    wandb.init(project="llama3-dpo-qlora", name="llama3-8b-dpo-run")
+    #wandb.init(project="llama3-dpo-qlora", name="llama3-8b-dpo-run")
     
     print("Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
@@ -163,7 +167,7 @@ def main():
     tokenizer.save_pretrained(OUTPUT_DIR)
     
     print(f"\nTraining complete! Model saved to {OUTPUT_DIR}")
-    wandb.finish()
+    #wandb.finish()
 
 if __name__ == "__main__":
     main()

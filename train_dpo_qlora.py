@@ -105,7 +105,7 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
         quantization_config=bnb_config,
-        device_map="auto",
+        #device_map="auto", #This tells accelerate to place model layers across devices, might make data parallelism harder
         torch_dtype=torch.bfloat16,
         trust_remote_code=True,
     )
@@ -122,7 +122,7 @@ def main():
     ref_model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
         quantization_config=bnb_config,
-        device_map="auto",
+        #device_map="auto",
         torch_dtype=torch.bfloat16,
         trust_remote_code=True,
     )
